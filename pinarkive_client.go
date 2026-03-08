@@ -1,3 +1,8 @@
+// Package pinarkive provides a minimal client for PinArkive API v3.
+// See https://pinarkive.com/docs.php (upload, pin, remove, users/me, uploads, tokens, status, allocations).
+// Auth: Bearer token or X-API-Key. On HTTP 4xx/5xx methods return *APIError with status code and API body.
+//
+// SDK version: 3.0.0
 package pinarkive
 
 import (
@@ -7,67 +12,105 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 )
 
-// PinarkiveClient represents a client for the Pinarkive API
-type PinarkiveClient struct {
+// Version is the SDK version (API v3).
+const Version = "3.0.0"
+
+// APIError is returned when the API responds with HTTP 4xx or 5xx.
+// API v3 codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found,
+// 409 Conflict, 413 Payload Too Large, 429 Too Many Requests, 500 Internal Server Error, 503 Service Unavailable.
+type APIError struct {
+	StatusCode int    // HTTP status (400, 401, 403, 404, 409, 413, 429, 500, 503)
+	Err        string // API JSON field "error"
+	Message    string // API JSON field "message"
+	Code       string // API JSON field "code" (e.g. email_not_verified)
+	Body       []byte // Raw response body
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("pinarkive api [%d]: %s", e.StatusCode, e.Message)
+	}
+	if e.Err != "" {
+		return fmt.Sprintf("pinarkive api [%d]: %s", e.StatusCode, e.Err)
+	}
+	return fmt.Sprintf("pinarkive api [%d]", e.StatusCode)
+}
+
+// Client for PinArkive API v3.
+type Client struct {
 	BaseURL string
 	Token   string
 	APIKey  string
-	Client  *http.Client
+	HTTP    *http.Client
 }
 
-// FileUpload represents a file to be uploaded with path and content
-type FileUpload struct {
-	Path    string
-	Content io.Reader
-}
-
-// TokenOptions represents options for token generation
-type TokenOptions struct {
-	Permissions   []string `json:"permissions,omitempty"`
-	ExpiresInDays int      `json:"expiresInDays,omitempty"`
-	IPAllowlist   []string `json:"ipAllowlist,omitempty"`
-}
-
-// NewPinarkiveClient creates a new Pinarkive client
-func NewPinarkiveClient(token, apiKey, baseURL string) *PinarkiveClient {
+// NewClient creates a client. baseURL defaults to https://api.pinarkive.com/api/v3.
+func NewClient(token, apiKey, baseURL string) *Client {
 	if baseURL == "" {
-		baseURL = "https://api.pinarkive.com/api/v2"
+		baseURL = "https://api.pinarkive.com/api/v3"
 	}
-	return &PinarkiveClient{
+	if baseURL != "" && baseURL[len(baseURL)-1] == '/' {
+		baseURL = baseURL[:len(baseURL)-1]
+	}
+	return &Client{
 		BaseURL: baseURL,
 		Token:   token,
 		APIKey:  apiKey,
-		Client:  &http.Client{},
+		HTTP:    &http.Client{},
 	}
 }
 
-func (c *PinarkiveClient) headers() http.Header {
-	headers := http.Header{}
-	if c.Token != "" {
-		headers.Set("Authorization", "Bearer "+c.Token)
-	} else if c.APIKey != "" {
-		headers.Set("Authorization", "Bearer "+c.APIKey)
+func (c *Client) headers(auth bool) http.Header {
+	h := http.Header{}
+	if auth {
+		if c.APIKey != "" {
+			h.Set("X-API-Key", c.APIKey)
+		} else if c.Token != "" {
+			h.Set("Authorization", "Bearer "+c.Token)
+		}
 	}
-	return headers
+	return h
 }
 
-// --- Authentication ---
+// --- Public (no auth) ---
 
-// --- File Management ---
+// Health GET /health
+func (c *Client) Health() (*http.Response, error) {
+	return c.do("GET", "/health", nil, nil, false)
+}
 
-// UploadFile uploads a single file
-func (c *PinarkiveClient) UploadFile(filePath string) (*http.Response, error) {
+// GetPlans GET /plans/
+func (c *Client) GetPlans() (*http.Response, error) {
+	return c.do("GET", "/plans/", nil, nil, false)
+}
+
+// GetPeers GET /peers/
+func (c *Client) GetPeers() (*http.Response, error) {
+	return c.do("GET", "/peers/", nil, nil, false)
+}
+
+// Login POST /auth/login – body email, password
+func (c *Client) Login(email, password string) (*http.Response, error) {
+	body := map[string]string{"email": email, "password": password}
+	return c.do("POST", "/auth/login", body, nil, false)
+}
+
+// --- Files ---
+
+// UploadFile POST /files/ – multipart file, optional cl, timelock (ISO 8601, premium)
+func (c *Client) UploadFile(filePath string, clusterID, timelock *string) (*http.Response, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
 	fw, err := w.CreateFormFile("file", filepath.Base(filePath))
 	if err != nil {
 		return nil, err
@@ -75,187 +118,227 @@ func (c *PinarkiveClient) UploadFile(filePath string) (*http.Response, error) {
 	if _, err = io.Copy(fw, file); err != nil {
 		return nil, err
 	}
+	if clusterID != nil && *clusterID != "" {
+		_ = w.WriteField("cl", *clusterID)
+	}
+	if timelock != nil && *timelock != "" {
+		_ = w.WriteField("timelock", *timelock)
+	}
 	w.Close()
-	url := c.BaseURL + "/files"
-	req, err := http.NewRequest("POST", url, &b)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = c.headers()
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	return c.Client.Do(req)
+	return c.doMultipart("POST", "/files/", &buf, w.FormDataContentType())
 }
 
-// UploadDirectory uploads a directory from local path
-func (c *PinarkiveClient) UploadDirectory(dirPath string) (*http.Response, error) {
+// UploadDirectory POST /files/directory – body dirPath, optional cl, timelock
+func (c *Client) UploadDirectory(dirPath string, clusterID, timelock *string) (*http.Response, error) {
 	data := map[string]string{"dirPath": dirPath}
-	return c.postJson("/files/directory", data, c.headers())
+	if clusterID != nil && *clusterID != "" {
+		data["cl"] = *clusterID
+	}
+	if timelock != nil && *timelock != "" {
+		data["timelock"] = *timelock
+	}
+	return c.do("POST", "/files/directory", data, nil, true)
 }
 
-// UploadDirectoryDAG uploads directory structure as DAG (Directed Acyclic Graph)
-func (c *PinarkiveClient) UploadDirectoryDAG(files map[string]io.Reader, dirName string) (*http.Response, error) {
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
-
-	// Add directory name if provided
+// UploadDirectoryDAG POST /files/directory-dag – multipart files[i][path], files[i][content] (content as file part); optional cl, timelock
+func (c *Client) UploadDirectoryDAG(files map[string]io.Reader, dirName string, clusterID, timelock *string) (*http.Response, error) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
 	if dirName != "" {
-		w.WriteField("dirName", dirName)
+		_ = w.WriteField("dirName", dirName)
 	}
-
-	// Add files
-	index := 0
+	if clusterID != nil && *clusterID != "" {
+		_ = w.WriteField("cl", *clusterID)
+	}
+	if timelock != nil && *timelock != "" {
+		_ = w.WriteField("timelock", *timelock)
+	}
+	i := 0
 	for path, content := range files {
-		// Add path
-		pathField := fmt.Sprintf("files[%d][path]", index)
-		w.WriteField(pathField, path)
-
-		// Add content
-		contentField := fmt.Sprintf("files[%d][content]", index)
-		fw, err := w.CreateFormField(contentField)
+		_ = w.WriteField(fmt.Sprintf("files[%d][path]", i), path)
+		// Content as file part (matches API and TS/Python SDKs; supports binary)
+		fw, err := w.CreateFormFile(fmt.Sprintf("files[%d][content]", i), filepath.Base(path))
 		if err != nil {
 			return nil, err
 		}
 		if _, err = io.Copy(fw, content); err != nil {
 			return nil, err
 		}
-		index++
+		i++
 	}
-
 	w.Close()
-	url := c.BaseURL + "/files/directory-dag"
-	req, err := http.NewRequest("POST", url, &b)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = c.headers()
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	return c.Client.Do(req)
+	return c.doMultipart("POST", "/files/directory-dag", &buf, w.FormDataContentType())
 }
 
-// RenameFile renames an uploaded file
-func (c *PinarkiveClient) RenameFile(uploadID, newName string) (*http.Response, error) {
-	data := map[string]string{"newName": newName}
-	return c.putJson("/files/rename/"+uploadID, data, c.headers())
-}
-
-// PinCid pins a CID to your account
-func (c *PinarkiveClient) PinCid(cid, filename string) (*http.Response, error) {
+// PinCid POST /files/pin/:cid – optional originalName, customName, cl, timelock
+func (c *Client) PinCid(cid string, opts *PinOptions) (*http.Response, error) {
 	data := map[string]string{}
-	if filename != "" {
-		data["filename"] = filename
+	if opts != nil {
+		if opts.OriginalName != "" {
+			data["originalName"] = opts.OriginalName
+		}
+		if opts.CustomName != "" {
+			data["customName"] = opts.CustomName
+		}
+		if opts.ClusterID != "" {
+			data["cl"] = opts.ClusterID
+		}
+		if opts.Timelock != "" {
+			data["timelock"] = opts.Timelock
+		}
 	}
-	return c.postJson("/files/pin/"+cid, data, c.headers())
+	return c.do("POST", "/files/pin/"+url.PathEscape(cid), data, nil, true)
 }
 
-// RemoveFile removes a file from storage
-func (c *PinarkiveClient) RemoveFile(cid string) (*http.Response, error) {
-	url := c.BaseURL + "/files/remove/" + cid
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return nil, err
+// PinOptions for PinCid
+type PinOptions struct {
+	OriginalName string
+	CustomName   string
+	ClusterID    string
+	Timelock     string
+}
+
+// RemoveFile DELETE /files/remove/:cid
+func (c *Client) RemoveFile(cid string) (*http.Response, error) {
+	return c.do("DELETE", "/files/remove/"+url.PathEscape(cid), nil, nil, true)
+}
+
+// --- Users ---
+
+// GetMe GET /users/me
+func (c *Client) GetMe() (*http.Response, error) {
+	return c.do("GET", "/users/me", nil, nil, true)
+}
+
+// ListUploads GET /users/me/uploads?page=&limit=
+func (c *Client) ListUploads(page, limit int) (*http.Response, error) {
+	if page <= 0 {
+		page = 1
 	}
-	req.Header = c.headers()
-	return c.Client.Do(req)
+	if limit <= 0 {
+		limit = 20
+	}
+	path := fmt.Sprintf("/users/me/uploads?page=%d&limit=%d", page, limit)
+	return c.do("GET", path, nil, nil, true)
 }
 
-// ListUploads lists uploaded files with pagination
-func (c *PinarkiveClient) ListUploads(page, limit int) (*http.Response, error) {
-	url := fmt.Sprintf("/users/me/uploads?page=%d&limit=%d", page, limit)
-	return c.get(url, c.headers())
-}
+// --- Tokens (name required; label default cli-access; expiresInDays optional) ---
 
-// --- Token Management ---
-
-// GenerateToken generates an API token with enhanced options
-func (c *PinarkiveClient) GenerateToken(name string, options TokenOptions) (*http.Response, error) {
+// GenerateToken POST /tokens/generate – name required, optional label, expiresInDays
+func (c *Client) GenerateToken(name string, label *string, expiresInDays *int) (*http.Response, error) {
 	data := map[string]interface{}{"name": name}
-
-	if len(options.Permissions) > 0 {
-		data["permissions"] = options.Permissions
+	if label != nil {
+		data["label"] = *label
 	}
-	if options.ExpiresInDays > 0 {
-		data["expiresInDays"] = options.ExpiresInDays
+	if expiresInDays != nil {
+		data["expiresInDays"] = *expiresInDays
 	}
-	if len(options.IPAllowlist) > 0 {
-		data["ipAllowlist"] = options.IPAllowlist
+	return c.do("POST", "/tokens/generate", data, nil, true)
+}
+
+// ListTokens GET /tokens/list
+func (c *Client) ListTokens() (*http.Response, error) {
+	return c.do("GET", "/tokens/list", nil, nil, true)
+}
+
+// RevokeToken DELETE /tokens/revoke/:name
+func (c *Client) RevokeToken(name string) (*http.Response, error) {
+	return c.do("DELETE", "/tokens/revoke/"+url.PathEscape(name), nil, nil, true)
+}
+
+// --- Status ---
+
+// GetStatus GET /status/:cid?cl=
+func (c *Client) GetStatus(cid string, clusterID *string) (*http.Response, error) {
+	path := "/status/" + url.PathEscape(cid)
+	if clusterID != nil && *clusterID != "" {
+		path += "?cl=" + url.QueryEscape(*clusterID)
 	}
-
-	return c.postJson("/tokens/generate", data, c.headers())
+	return c.do("GET", path, nil, nil, true)
 }
 
-// ListTokens lists all API tokens
-func (c *PinarkiveClient) ListTokens() (*http.Response, error) {
-	return c.get("/tokens/list", c.headers())
+// GetAllocations GET /allocations/:cid?cl=
+func (c *Client) GetAllocations(cid string, clusterID *string) (*http.Response, error) {
+	path := "/allocations/" + url.PathEscape(cid)
+	if clusterID != nil && *clusterID != "" {
+		path += "?cl=" + url.QueryEscape(*clusterID)
+	}
+	return c.do("GET", path, nil, nil, true)
 }
 
-// RevokeToken revokes an API token
-func (c *PinarkiveClient) RevokeToken(name string) (*http.Response, error) {
-	url := "/tokens/revoke/" + name
-	return c.delete(url, c.headers())
-}
+// --- Helpers ---
 
-// --- Status and Monitoring ---
-
-// GetStatus gets file status
-func (c *PinarkiveClient) GetStatus(cid string) (*http.Response, error) {
-	url := "/status/" + cid
-	return c.get(url, c.headers())
-}
-
-// GetAllocations gets storage allocations for a CID
-func (c *PinarkiveClient) GetAllocations(cid string) (*http.Response, error) {
-	url := "/status/allocations/" + cid
-	return c.get(url, c.headers())
-}
-
-// --- Helper HTTP methods ---
-
-func (c *PinarkiveClient) get(path string, headers http.Header) (*http.Response, error) {
-	url := c.BaseURL + path
-	req, err := http.NewRequest("GET", url, nil)
+func (c *Client) do(method, path string, body interface{}, query url.Values, auth bool) (*http.Response, error) {
+	var reqBody io.Reader
+	if body != nil && (method == "POST" || method == "PUT") {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewReader(b)
+	}
+	fullPath := c.BaseURL + path
+	if query != nil && len(query) > 0 {
+		fullPath += "?" + query.Encode()
+	}
+	req, err := http.NewRequest(method, fullPath, reqBody)
 	if err != nil {
 		return nil, err
 	}
-	req.Header = headers
-	return c.Client.Do(req)
-}
-
-func (c *PinarkiveClient) postJson(path string, data interface{}, headers http.Header) (*http.Response, error) {
-	url := c.BaseURL + path
-	var body io.Reader
-	if data != nil {
-		b, _ := json.Marshal(data)
-		body = bytes.NewBuffer(b)
+	for k, v := range c.headers(auth) {
+		for _, vv := range v {
+			req.Header.Set(k, vv)
+		}
 	}
-	req, err := http.NewRequest("POST", url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = headers
-	if data != nil {
+	if body != nil && (method == "POST" || method == "PUT") {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.Client.Do(req)
-}
-
-func (c *PinarkiveClient) putJson(path string, data interface{}, headers http.Header) (*http.Response, error) {
-	url := c.BaseURL + path
-	b, _ := json.Marshal(data)
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(b))
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	req.Header = headers
-	req.Header.Set("Content-Type", "application/json")
-	return c.Client.Do(req)
+	if resp.StatusCode >= 400 {
+		return nil, parseAPIError(resp)
+	}
+	return resp, nil
 }
 
-func (c *PinarkiveClient) delete(path string, headers http.Header) (*http.Response, error) {
-	url := c.BaseURL + path
-	req, err := http.NewRequest("DELETE", url, nil)
+func (c *Client) doMultipart(method, path string, body io.Reader, contentType string) (*http.Response, error) {
+	req, err := http.NewRequest(method, c.BaseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header = headers
-	return c.Client.Do(req)
+	for k, v := range c.headers(true) {
+		for _, vv := range v {
+			req.Header.Set(k, vv)
+		}
+	}
+	req.Header.Set("Content-Type", contentType)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, parseAPIError(resp)
+	}
+	return resp, nil
+}
+
+func parseAPIError(resp *http.Response) *APIError {
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	apiErr := &APIError{StatusCode: resp.StatusCode, Body: body}
+	var m map[string]interface{}
+	if json.Unmarshal(body, &m) == nil {
+		if s, ok := m["error"].(string); ok {
+			apiErr.Err = s
+		}
+		if s, ok := m["message"].(string); ok {
+			apiErr.Message = s
+		}
+		if s, ok := m["code"].(string); ok {
+			apiErr.Code = s
+		}
+	}
+	return apiErr
 }
