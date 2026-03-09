@@ -2,7 +2,7 @@
 // See https://pinarkive.com/docs.php (upload, pin, remove, users/me, uploads, tokens, status, allocations).
 // Auth: Bearer token or X-API-Key. On HTTP 4xx/5xx methods return *APIError with status code and API body.
 //
-// SDK version: 3.0.0
+// SDK version: 3.1.0
 package pinarkive
 
 import (
@@ -18,17 +18,20 @@ import (
 )
 
 // Version is the SDK version (API v3).
-const Version = "3.0.0"
+const Version = "3.1.0"
 
 // APIError is returned when the API responds with HTTP 4xx or 5xx.
 // API v3 codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found,
 // 409 Conflict, 413 Payload Too Large, 429 Too Many Requests, 500 Internal Server Error, 503 Service Unavailable.
+// For 403 missing_scope, check Required. For 429, check RetryAfterSeconds.
 type APIError struct {
-	StatusCode int    // HTTP status (400, 401, 403, 404, 409, 413, 429, 500, 503)
-	Err        string // API JSON field "error"
-	Message    string // API JSON field "message"
-	Code       string // API JSON field "code" (e.g. email_not_verified)
-	Body       []byte // Raw response body
+	StatusCode        int    // HTTP status (400, 401, 403, 404, 409, 413, 429, 500, 503)
+	Err               string // API JSON field "error"
+	Message           string // API JSON field "message"
+	Code              string // API JSON field "code" (e.g. email_not_verified, missing_scope)
+	Required          string // For 403 missing_scope: the required scope
+	RetryAfterSeconds int    // For 429: seconds until retry (0 if not set)
+	Body              []byte // Raw response body
 }
 
 func (e *APIError) Error() string {
@@ -43,10 +46,12 @@ func (e *APIError) Error() string {
 
 // Client for PinArkive API v3.
 type Client struct {
-	BaseURL string
-	Token   string
-	APIKey  string
-	HTTP    *http.Client
+	BaseURL           string
+	Token             string
+	APIKey            string
+	HTTP              *http.Client
+	// RequestSourceWeb, when true, sends X-Request-Source: web on Bearer-authenticated requests only (not when using API Key). Set this when using the client from a web app so the backend classifies requests as WEB in logs.
+	RequestSourceWeb bool
 }
 
 // NewClient creates a client. baseURL defaults to https://api.pinarkive.com/api/v3.
@@ -72,6 +77,9 @@ func (c *Client) headers(auth bool) http.Header {
 			h.Set("X-API-Key", c.APIKey)
 		} else if c.Token != "" {
 			h.Set("Authorization", "Bearer "+c.Token)
+			if c.RequestSourceWeb {
+				h.Set("X-Request-Source", "web")
+			}
 		}
 	}
 	return h
@@ -94,10 +102,16 @@ func (c *Client) GetPeers() (*http.Response, error) {
 	return c.do("GET", "/peers/", nil, nil, false)
 }
 
-// Login POST /auth/login – body email, password
+// Login POST /auth/login – body email, password. If response has requires2FA and temporaryToken, call Verify2FALogin.
 func (c *Client) Login(email, password string) (*http.Response, error) {
 	body := map[string]string{"email": email, "password": password}
 	return c.do("POST", "/auth/login", body, nil, false)
+}
+
+// Verify2FALogin POST /auth/2fa/verify-login – complete login after 2FA; returns response with token.
+func (c *Client) Verify2FALogin(temporaryToken, code string) (*http.Response, error) {
+	body := map[string]string{"temporaryToken": temporaryToken, "code": code}
+	return c.do("POST", "/auth/2fa/verify-login", body, nil, false)
 }
 
 // --- Files ---
@@ -224,14 +238,20 @@ func (c *Client) ListUploads(page, limit int) (*http.Response, error) {
 
 // --- Tokens (name required; label default cli-access; expiresInDays optional) ---
 
-// GenerateToken POST /tokens/generate – name required, optional label, expiresInDays
-func (c *Client) GenerateToken(name string, label *string, expiresInDays *int) (*http.Response, error) {
+// GenerateToken POST /tokens/generate – name required, optional label, expiresInDays, scopes, totpCode (2FA)
+func (c *Client) GenerateToken(name string, label *string, expiresInDays *int, scopes []string, totpCode *string) (*http.Response, error) {
 	data := map[string]interface{}{"name": name}
 	if label != nil {
 		data["label"] = *label
 	}
 	if expiresInDays != nil {
 		data["expiresInDays"] = *expiresInDays
+	}
+	if len(scopes) > 0 {
+		data["scopes"] = scopes
+	}
+	if totpCode != nil && *totpCode != "" {
+		data["totpCode"] = *totpCode
 	}
 	return c.do("POST", "/tokens/generate", data, nil, true)
 }
@@ -241,9 +261,13 @@ func (c *Client) ListTokens() (*http.Response, error) {
 	return c.do("GET", "/tokens/list", nil, nil, true)
 }
 
-// RevokeToken DELETE /tokens/revoke/:name
-func (c *Client) RevokeToken(name string) (*http.Response, error) {
-	return c.do("DELETE", "/tokens/revoke/"+url.PathEscape(name), nil, nil, true)
+// RevokeToken DELETE /tokens/revoke/:name. Pass totpCode when account has 2FA.
+func (c *Client) RevokeToken(name string, totpCode *string) (*http.Response, error) {
+	var body interface{}
+	if totpCode != nil && *totpCode != "" {
+		body = map[string]string{"totpCode": *totpCode}
+	}
+	return c.do("DELETE", "/tokens/revoke/"+url.PathEscape(name), body, nil, true)
 }
 
 // --- Status ---
@@ -270,7 +294,7 @@ func (c *Client) GetAllocations(cid string, clusterID *string) (*http.Response, 
 
 func (c *Client) do(method, path string, body interface{}, query url.Values, auth bool) (*http.Response, error) {
 	var reqBody io.Reader
-	if body != nil && (method == "POST" || method == "PUT") {
+	if body != nil && (method == "POST" || method == "PUT" || method == "DELETE") {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, err
@@ -290,7 +314,7 @@ func (c *Client) do(method, path string, body interface{}, query url.Values, aut
 			req.Header.Set(k, vv)
 		}
 	}
-	if body != nil && (method == "POST" || method == "PUT") {
+	if body != nil && (method == "POST" || method == "PUT" || method == "DELETE") {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.HTTP.Do(req)
@@ -338,6 +362,22 @@ func parseAPIError(resp *http.Response) *APIError {
 		}
 		if s, ok := m["code"].(string); ok {
 			apiErr.Code = s
+		}
+		if s, ok := m["required"].(string); ok {
+			apiErr.Required = s
+		}
+		if resp.StatusCode == 429 {
+			if n, ok := m["retryAfter"].(float64); ok {
+				apiErr.RetryAfterSeconds = int(n)
+			}
+			if apiErr.RetryAfterSeconds == 0 {
+				if h := resp.Header.Get("Retry-After"); h != "" {
+					var ra int
+					if _, err := fmt.Sscanf(h, "%d", &ra); err == nil {
+						apiErr.RetryAfterSeconds = ra
+					}
+				}
+			}
 		}
 	}
 	return apiErr

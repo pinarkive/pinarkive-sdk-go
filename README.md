@@ -2,7 +2,7 @@
 
 Minimal Go client for the **PinArkive API v3**. Upload files, pin by CID, manage tokens, and check status. See [pinarkive.com/docs.php](https://pinarkive.com/docs.php).
 
-**Version:** 3.0.0
+**Version:** 3.1.0
 
 ## Installation
 
@@ -55,6 +55,7 @@ func main() {
 ## Authentication
 
 - **NewClient(token, apiKey, baseURL):** empty string for default base URL. API key is sent as `X-API-Key`; token as `Authorization: Bearer <token>`.
+- **RequestSourceWeb:** set `client.RequestSourceWeb = true` when using the client from a web app. The SDK will send `X-Request-Source: web` on every Bearer-authenticated request (not when using API Key), so the backend classifies them as **WEB** in logs instead of **JWT**.
 
 ## API Methods (minimal set)
 
@@ -64,6 +65,7 @@ func main() {
 | `GetPlans()` | GET /plans/ |
 | `GetPeers()` | GET /peers/ |
 | `Login(email, password)` | POST /auth/login |
+| `Verify2FALogin(temporaryToken, code string)` | POST /auth/2fa/verify-login |
 | `UploadFile(filePath, clusterID, timelock *string)` | POST /files/ |
 | `UploadDirectory(dirPath, clusterID, timelock *string)` | POST /files/directory |
 | `UploadDirectoryDAG(files map[string]io.Reader, dirName string, clusterID, timelock *string)` | POST /files/directory-dag |
@@ -71,9 +73,9 @@ func main() {
 | `RemoveFile(cid)` | DELETE /files/remove/:cid |
 | `GetMe()` | GET /users/me |
 | `ListUploads(page, limit int)` | GET /users/me/uploads |
-| `GenerateToken(name string, label *string, expiresInDays *int)` | POST /tokens/generate |
+| `GenerateToken(name, label, expiresInDays *int, scopes []string, totpCode *string)` | POST /tokens/generate |
 | `ListTokens()` | GET /tokens/list |
-| `RevokeToken(name)` | DELETE /tokens/revoke/:name |
+| `RevokeToken(name string, totpCode *string)` | DELETE /tokens/revoke/:name |
 | `GetStatus(cid string, clusterID *string)` | GET /status/:cid |
 | `GetAllocations(cid string, clusterID *string)` | GET /allocations/:cid |
 
@@ -86,7 +88,9 @@ On HTTP 4xx/5xx methods return `(nil, *APIError)`. **`APIError`** has:
 - `StatusCode` — HTTP status
 - `Err` — API field `error`
 - `Message` — API field `message`
-- `Code` — API field `code` (e.g. `email_not_verified`)
+- `Code` — API field `code` (e.g. `email_not_verified`, `missing_scope`, `2fa_required`)
+- `Required` — for 403 `missing_scope`: the required scope
+- `RetryAfterSeconds` — for 429: seconds until retry (0 if not set)
 - `Body` — raw response bytes
 
 ```go
@@ -101,6 +105,12 @@ defer resp.Body.Close()
 ```
 
 ## Changelog
+
+### 3.1.0
+
+- **Request source:** `Client.RequestSourceWeb = true` sends `X-Request-Source: web` on Bearer requests (for backend logs).
+- **Scopes & 2FA:** `GenerateToken` accepts `scopes []string` and `totpCode *string`; `RevokeToken` accepts `totpCode *string`. `Verify2FALogin(temporaryToken, code)` for login with 2FA.
+- **Errors:** `APIError` has `Required` (403 missing_scope) and `RetryAfterSeconds` (429).
 
 ### 3.0.0
 
@@ -119,7 +129,7 @@ defer resp.Body.Close()
 3. Use `PinCid(cid, &pinarkive.PinOptions{CustomName: "x", ClusterID: "cl0"})` instead of `PinCid(cid, filename)`.
 4. Use `GenerateToken(name, &label, &expiresInDays)` instead of `GenerateToken(name, TokenOptions{...})`.
 5. Use `UploadFile(path, clusterID, timelock)` and `UploadDirectory(path, clusterID, timelock)` with pointers; pass `nil` when not used.
-6. Pin with `go get github.com/pinarkive/pinarkive-sdk-go@v3.0.0` (or later).
+6. Pin with `go get github.com/pinarkive/pinarkive-sdk-go@v3.1.0` (or later).
 
 ## Links
 
