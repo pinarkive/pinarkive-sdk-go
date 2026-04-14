@@ -2,7 +2,7 @@
 // See https://pinarkive.com/docs.php (upload, pin, remove, users/me, uploads, tokens, status, allocations).
 // Auth: Bearer token or X-API-Key. On HTTP 4xx/5xx methods return *APIError with status code and API body.
 //
-// SDK version: 3.1.0
+// SDK version: 3.1.1
 package pinarkive
 
 import (
@@ -15,10 +15,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Version is the SDK version (API v3).
-const Version = "3.1.0"
+const Version = "3.1.1"
 
 // APIError is returned when the API responds with HTTP 4xx or 5xx.
 // API v3 codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found,
@@ -154,7 +155,7 @@ func (c *Client) UploadDirectory(dirPath string, clusterID, timelock *string) (*
 	return c.do("POST", "/files/directory", data, nil, true)
 }
 
-// UploadDirectoryDAG POST /files/directory-dag – multipart files[i][path], files[i][content] (content as file part); optional cl, timelock
+// UploadDirectoryDAG POST /files/directory-dag – multipart: repeated field name `files`, filename = path inside DAG; optional cl, timelock
 func (c *Client) UploadDirectoryDAG(files map[string]io.Reader, dirName string, clusterID, timelock *string) (*http.Response, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -167,18 +168,19 @@ func (c *Client) UploadDirectoryDAG(files map[string]io.Reader, dirName string, 
 	if timelock != nil && *timelock != "" {
 		_ = w.WriteField("timelock", *timelock)
 	}
-	i := 0
-	for path, content := range files {
-		_ = w.WriteField(fmt.Sprintf("files[%d][path]", i), path)
-		// Content as file part (matches API and TS/Python SDKs; supports binary)
-		fw, err := w.CreateFormFile(fmt.Sprintf("files[%d][content]", i), filepath.Base(path))
+	for p, content := range files {
+		relPath := filepath.ToSlash(p)
+		if relPath == "" || relPath[0] == '/' || strings.Contains(relPath, "..") {
+			return nil, fmt.Errorf("invalid DAG path: %s", p)
+		}
+		// Repeated field name `files`, filename is the path inside the DAG.
+		fw, err := w.CreateFormFile("files", relPath)
 		if err != nil {
 			return nil, err
 		}
 		if _, err = io.Copy(fw, content); err != nil {
 			return nil, err
 		}
-		i++
 	}
 	w.Close()
 	return c.doMultipart("POST", "/files/directory-dag", &buf, w.FormDataContentType())
