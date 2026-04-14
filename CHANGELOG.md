@@ -2,6 +2,13 @@
 
 All notable changes to `pinarkive-sdk-go` are documented here.
 
+## [3.1.2] - 2026-04-14
+
+### Changed
+
+- **Go modules:** Module path is now `github.com/pinarkive/pinarkive-sdk-go/v3` so tags **`v3.x.x`** resolve correctly on [pkg.go.dev](https://pkg.go.dev/github.com/pinarkive/pinarkive-sdk-go/v3). Import with `import "github.com/pinarkive/pinarkive-sdk-go/v3"`.
+- **Documentation:** Links updated to [https://docs.pinarkive.com](https://docs.pinarkive.com).
+
 ## [3.1.1] - 2026-04-14
 
 ### Fixed
