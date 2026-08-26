@@ -2,7 +2,7 @@
 // See https://docs.pinarkive.com (upload, pin, remove, users/me, uploads, tokens, status, allocations).
 // Auth: Bearer token or X-API-Key. On HTTP 4xx/5xx methods return *APIError with status code and API body.
 //
-// SDK version: 3.1.2
+// SDK version: 3.1.3
 package pinarkive
 
 import (
@@ -19,7 +19,7 @@ import (
 )
 
 // Version is the SDK version (API v3).
-const Version = "3.1.2"
+const Version = "3.1.3"
 
 // APIError is returned when the API responds with HTTP 4xx or 5xx.
 // API v3 codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found,
