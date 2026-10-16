@@ -1,0 +1,116 @@
+{
+  "communities": {
+    "0": [
+      "pinarkive_client",
+      "pinarkive_client_newclient",
+      "pinarkive_client_parseapierror",
+      "pinarkive_sdk_go_apierror",
+      "pinarkive_sdk_go_apierror_error",
+      "pinarkive_sdk_go_client_pincid",
+      "pinarkive_sdk_go_pinoptions"
+    ],
+    "1": [
+      "header",
+      "pinarkive_sdk_go_client_domultipart",
+      "pinarkive_sdk_go_client_headers",
+      "pinarkive_sdk_go_client_uploaddirectorydag",
+      "pinarkive_sdk_go_client_uploadfile",
+      "reader"
+    ],
+    "2": [
+      "pinarkive_sdk_go_client",
+      "pinarkive_sdk_go_client_getplans",
+      "pinarkive_sdk_go_client_health",
+      "pinarkive_sdk_go_client_listtokens",
+      "pinarkive_sdk_go_client_login",
+      "pinarkive_sdk_go_client_revoketoken"
+    ],
+    "3": [
+      "pinarkive_sdk_go_client_do",
+      "pinarkive_sdk_go_client_getme",
+      "pinarkive_sdk_go_client_getstatus",
+      "pinarkive_sdk_go_client_uploaddirectory",
+      "pinarkive_sdk_go_client_verify2falogin",
+      "values"
+    ],
+    "4": [
+      "pinarkive_sdk_go_client_generatetoken",
+      "pinarkive_sdk_go_client_getallocations",
+      "pinarkive_sdk_go_client_getpeers",
+      "pinarkive_sdk_go_client_listuploads",
+      "pinarkive_sdk_go_client_removefile",
+      "response"
+    ],
+    "5": [
+      "pkg_github_com_pinarkive_pinarkive_sdk_go_v3"
+    ]
+  },
+  "cohesion": {
+    "0": 0.3333333333333333,
+    "1": 0.4,
+    "2": 0.3333333333333333,
+    "3": 0.3333333333333333,
+    "4": 0.3333333333333333,
+    "5": 1.0
+  },
+  "gods": [
+    {
+      "id": "pinarkive_sdk_go_client",
+      "label": "Client",
+      "degree": 22
+    },
+    {
+      "id": "pinarkive_client_parseapierror",
+      "label": "parseAPIError()",
+      "degree": 5
+    },
+    {
+      "id": "pinarkive_sdk_go_apierror",
+      "label": "APIError",
+      "degree": 3
+    },
+    {
+      "id": "pinarkive_client_newclient",
+      "label": "NewClient()",
+      "degree": 2
+    },
+    {
+      "id": "pinarkive_sdk_go_pinoptions",
+      "label": "PinOptions",
+      "degree": 2
+    },
+    {
+      "id": "pkg_github_com_pinarkive_pinarkive_sdk_go_v3",
+      "label": "github.com/pinarkive/pinarkive-sdk-go/v3",
+      "degree": 0
+    }
+  ],
+  "surprises": [
+    {
+      "source": "NewClient()",
+      "target": "Client",
+      "source_files": [
+        "pinarkive_client.go",
+        "pinarkive_client.go"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "note": "Bridges community 2 \u2192 community 0"
+    },
+    {
+      "source": "parseAPIError()",
+      "target": "Response",
+      "source_files": [
+        "pinarkive_client.go",
+        ""
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "references",
+      "note": "Bridges community 4 \u2192 community 0"
+    }
+  ],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}
